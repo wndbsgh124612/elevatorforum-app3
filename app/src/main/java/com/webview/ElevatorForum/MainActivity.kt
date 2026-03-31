@@ -21,7 +21,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.firebase.messaging.FirebaseMessaging
 
@@ -29,6 +31,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+    private var safeTopPx: Int = 0
+    private var safeBottomPx: Int = 0
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -46,8 +51,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 시스템바 영역을 앱이 침범하지 않도록 기본 동작 사용
-        WindowCompat.setDecorFitsSystemWindows(window, true)
+        // 시스템바와 겹치지 않게 하되, 웹 스크롤은 그대로 유지
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         setContentView(R.layout.activity_main)
 
@@ -55,11 +60,28 @@ class MainActivity : AppCompatActivity() {
         swipeRefresh = findViewById(R.id.swipeRefresh)
 
         swipeRefresh.isEnabled = false
+
+        applyWindowInsets()
         configureWebView()
         configureBackPress()
         loadInitialUrl(intent)
 
         webView.postDelayed({ requestPushPermissionIfNeeded() }, 2500)
+    }
+
+    private fun applyWindowInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(swipeRefresh) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            safeTopPx = systemBars.top
+            safeBottomPx = systemBars.bottom
+
+            // 앱 배경만 시스템바 영역까지 채우고, 웹에는 최소한의 보정만 주입
+            view.setPadding(0, 0, 0, 0)
+
+            runCatching { applyMinimalInsetsToWeb() }
+            insets
+        }
+        ViewCompat.requestApplyInsets(swipeRefresh)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -84,7 +106,7 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             builtInZoomControls = false
             displayZoomControls = false
-            userAgentString = "$userAgentString ElevatorForumApp/3.1"
+            userAgentString = "$userAgentString ElevatorForumApp/4.0"
         }
 
         webView.setBackgroundColor(0xFF191919.toInt())
@@ -103,6 +125,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 runCatching { CookieManager.getInstance().flush() }
+                applyMinimalInsetsToWeb()
             }
         }
 
@@ -135,6 +158,50 @@ class MainActivity : AppCompatActivity() {
                 runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
             }
         })
+    }
+
+    private fun applyMinimalInsetsToWeb() {
+        val js = """
+            (function() {
+                try {
+                    var topPx = '${'$'}{safeTopPx}px';
+                    var bottomPx = '${'$'}{safeBottomPx}px';
+
+                    document.documentElement.style.setProperty('--app-safe-top', topPx);
+                    document.documentElement.style.setProperty('--app-safe-bottom', bottomPx);
+
+                    if (!document.getElementById('ef-app-minimal-insets')) {
+                        var style = document.createElement('style');
+                        style.id = 'ef-app-minimal-insets';
+                        style.innerHTML = `
+                            html, body {
+                                background:#191919 !important;
+                            }
+                            body::before {
+                                content:'';
+                                position:fixed;
+                                top:0; left:0; right:0;
+                                height:var(--app-safe-top);
+                                background:#191919;
+                                z-index:9998;
+                                pointer-events:none;
+                            }
+                            #header, .ef-header, .mobile-header, #hd, .header, .site-header,
+                            .header_wrap, .header-wrap {
+                                top:var(--app-safe-top) !important;
+                            }
+                            #quick_menu, .rb-bottombar, .bottom-nav, .tabbar, .footer-nav,
+                            .mobile-footer, .dock-menu {
+                                bottom:var(--app-safe-bottom) !important;
+                            }
+                        `;
+                        document.head.appendChild(style);
+                    }
+                } catch (e) {}
+            })();
+        """.trimIndent()
+
+        runCatching { webView.evaluateJavascript(js, null) }
     }
 
     private fun configureBackPress() {
