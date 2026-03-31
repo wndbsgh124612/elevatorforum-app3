@@ -21,6 +21,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.firebase.messaging.FirebaseMessaging
 
@@ -44,19 +47,31 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 시스템 바 아래로 내용이 깔리지 않게 하되, 웹에 CSS를 강제로 주입하지는 않음.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
         swipeRefresh = findViewById(R.id.swipeRefresh)
 
-        // 앱에서 강제 새로고침을 막고 사이트 자체 스크롤을 그대로 사용
         swipeRefresh.isEnabled = false
-
+        applySystemInsets()
         configureWebView()
         configureBackPress()
         loadInitialUrl(intent)
 
         webView.postDelayed({ requestPushPermissionIfNeeded() }, 2500)
+    }
+
+    private fun applySystemInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(swipeRefresh) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(0, bars.top, 0, bars.bottom)
+            insets
+        }
+        ViewCompat.requestApplyInsets(swipeRefresh)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -81,7 +96,7 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             builtInZoomControls = false
             displayZoomControls = false
-            userAgentString = "$userAgentString ElevatorForumApp/2.1 RebuilderV2"
+            userAgentString = "$userAgentString ElevatorForumApp/2.2 RebuilderV3"
         }
 
         webView.setBackgroundColor(0xFF191919.toInt())
@@ -218,10 +233,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendTokenToServer(token: String) {
         val safeToken = token
-            .replace("\\", "\\\\")
-            .replace("'", "\\'")
-            .replace("\n", "")
-            .replace("\r", "")
+            .replace("\", "\\")
+            .replace("'", "\'")
+            .replace("
+", "")
+            .replace("", "")
 
         val tokenUrl = getString(R.string.token_url)
 
