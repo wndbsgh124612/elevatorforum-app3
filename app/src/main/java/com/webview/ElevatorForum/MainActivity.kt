@@ -21,8 +21,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.firebase.messaging.FirebaseMessaging
 
@@ -30,9 +28,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
-
-    private var safeTopPx: Int = 0
-    private var safeBottomPx: Int = 0
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -54,30 +49,14 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         swipeRefresh = findViewById(R.id.swipeRefresh)
 
+        // 앱에서 강제 새로고침을 막고 사이트 자체 스크롤을 그대로 사용
         swipeRefresh.isEnabled = false
 
-        applyWindowInsets()
         configureWebView()
         configureBackPress()
         loadInitialUrl(intent)
 
         webView.postDelayed({ requestPushPermissionIfNeeded() }, 2500)
-    }
-
-    private fun applyWindowInsets() {
-        ViewCompat.setOnApplyWindowInsetsListener(swipeRefresh) { view, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            safeTopPx = systemBars.top
-            safeBottomPx = systemBars.bottom
-
-            view.setPadding(0, safeTopPx, 0, safeBottomPx)
-            webView.setPadding(0, 0, 0, 0)
-            webView.clipToPadding = false
-
-            runCatching { applySafeAreaToWeb() }
-            insets
-        }
-        ViewCompat.requestApplyInsets(swipeRefresh)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -102,7 +81,7 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             builtInZoomControls = false
             displayZoomControls = false
-            userAgentString = "$userAgentString ElevatorForumApp/2.0 RebuilderImproved"
+            userAgentString = "$userAgentString ElevatorForumApp/2.1 RebuilderV2"
         }
 
         webView.setBackgroundColor(0xFF191919.toInt())
@@ -110,6 +89,7 @@ class MainActivity : AppCompatActivity() {
         webView.isFocusableInTouchMode = true
         webView.overScrollMode = WebView.OVER_SCROLL_NEVER
         webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -120,8 +100,6 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 runCatching { CookieManager.getInstance().flush() }
-                applySafeAreaToWeb()
-                disableOverscrollBounceByJs()
             }
         }
 
@@ -154,80 +132,6 @@ class MainActivity : AppCompatActivity() {
                 runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
             }
         })
-    }
-
-    private fun applySafeAreaToWeb() {
-        val js = """
-            (function() {
-                try {
-                    var topPx = '${'$'}{safeTopPx}px';
-                    var bottomPx = '${'$'}{safeBottomPx}px';
-
-                    document.documentElement.style.setProperty('--app-safe-top', topPx);
-                    document.documentElement.style.setProperty('--app-safe-bottom', bottomPx);
-
-                    if (!document.getElementById('ef-app-safe-style')) {
-                        var style = document.createElement('style');
-                        style.id = 'ef-app-safe-style';
-                        style.innerHTML = `
-                            :root {
-                                --app-safe-top: ${'$'}{topPx};
-                                --app-safe-bottom: ${'$'}{bottomPx};
-                            }
-                            html, body {
-                                background:#191919 !important;
-                                overscroll-behavior-y:none !important;
-                            }
-                            body::before {
-                                content:'';
-                                position:fixed;
-                                top:0; left:0; right:0;
-                                height:calc(var(--app-safe-top) + 8px);
-                                background:#191919;
-                                z-index:9998;
-                                pointer-events:none;
-                            }
-                            #header, .ef-header, .mobile-header, #hd, .header, .site-header {
-                                position:relative;
-                                z-index:9999 !important;
-                                background:#191919 !important;
-                                top:var(--app-safe-top) !important;
-                            }
-                            #contents_wrap, .contents_wrap, .ef-contents-wrap,
-                            #container, #content, .content_wrap, section.sub, section.index {
-                                padding-top: calc(var(--app-safe-top) + 30px) !important;
-                                box-sizing:border-box !important;
-                            }
-                            .ef-board, .ef-partner-board-tabs {
-                                margin-top:30px !important;
-                            }
-                            #quick_menu, .rb-bottombar, .bottom-nav, .tabbar, .footer-nav {
-                                bottom:calc(var(--app-safe-bottom) + 8px) !important;
-                            }
-                            #sidebar, #gnb, .mobile-menu, .side-menu, .drawer-menu, .rb-sidebar, .menu-panel {
-                                overscroll-behavior-y:contain !important;
-                                padding-top:calc(var(--app-safe-top) + 8px) !important;
-                                padding-bottom:calc(var(--app-safe-bottom) + 8px) !important;
-                            }
-                        `;
-                        document.head.appendChild(style);
-                    }
-                } catch (e) {}
-            })();
-        """.trimIndent()
-        runCatching { webView.evaluateJavascript(js, null) }
-    }
-
-    private fun disableOverscrollBounceByJs() {
-        val js = """
-            (function() {
-                try {
-                    document.documentElement.style.overscrollBehaviorY = 'none';
-                    document.body.style.overscrollBehaviorY = 'none';
-                } catch(e) {}
-            })();
-        """.trimIndent()
-        runCatching { webView.evaluateJavascript(js, null) }
     }
 
     private fun configureBackPress() {
