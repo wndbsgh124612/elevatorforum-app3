@@ -1,0 +1,13 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.ElevatorForum" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@color/ef_black</item>
+        <item name="android:navigationBarColor">@color/ef_black</item>
+        <item name="android:windowBackground">@color/ef_black</item>
+    </style>
+
+    <style name="Theme.ElevatorForum.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ef_black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_centerpiece</item>
+        <item name="postSplashScreenTheme">@style/Theme.ElevatorForum</item>
+    </style>
+</resources>
