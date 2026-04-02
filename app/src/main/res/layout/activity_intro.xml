@@ -2,14 +2,12 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#191919">
+    android:background="#8FD3FF">
 
     <ImageView
         android:id="@+id/introImage"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:adjustViewBounds="true"
-        android:contentDescription="@null"
         android:scaleType="centerCrop"
         android:src="@drawable/splash_screen" />
 </FrameLayout>
