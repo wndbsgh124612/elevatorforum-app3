@@ -16,13 +16,9 @@ class IntroActivity : AppCompatActivity() {
 
         Handler(Looper.getMainLooper()).postDelayed({
             startActivity(Intent(this, MainActivity::class.java).apply {
-                putExtras(intent ?: Intent())
-                if (!pushUrl.isNullOrBlank()) {
-                    putExtra("push_url", pushUrl)
-                }
-                if (deepLink != null) {
-                    data = deepLink
-                }
+                intent?.extras?.let { putExtras(it) }
+                if (!pushUrl.isNullOrBlank()) putExtra("push_url", pushUrl)
+                if (deepLink != null) data = deepLink
             })
             finish()
         }, 1200L)

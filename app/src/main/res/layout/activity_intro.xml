@@ -4,9 +4,9 @@
     android:layout_height="match_parent">
 
     <ImageView
-        android:id="@+id/introImage"
+        android:id="@+id/splashImage"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:scaleType="centerCrop"
-        android:src="@drawable/splash_screen" />
+        android:src="@drawable/splash_screen"
+        android:scaleType="centerCrop" />
 </FrameLayout>
