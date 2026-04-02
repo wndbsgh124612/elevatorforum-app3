@@ -1,0 +1,1 @@
+Replace your project with this version or copy patched files. Uninstall the old app before installing the new APK so the launcher icon cache refreshes.

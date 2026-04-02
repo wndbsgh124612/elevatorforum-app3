@@ -29,6 +29,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var swipeRefresh: SwipeRefreshLayout
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var lastSentToken: String? = null
+
+    // 푸시로 들어온 앵커(#c_79 같은 댓글 위치) 보관
+    private var pendingAnchor: String? = null
+    private var lastLoadedPushUrl: String? = null
 
     private val fileChooserLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -46,22 +51,18 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 시스템 상태바/하단바를 앱 밖으로 두고 웹뷰가 그 아래로 들어가지 않게 한다.
         WindowCompat.setDecorFitsSystemWindows(window, true)
-
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
         swipeRefresh = findViewById(R.id.swipeRefresh)
 
-        // 웹 메뉴 스크롤과 충돌 방지
         swipeRefresh.isEnabled = false
-
         configureWebView()
         configureBackPress()
         loadInitialUrl(intent)
 
-        webView.postDelayed({ requestPushPermissionIfNeeded() }, 2500)
+        webView.postDelayed({ requestPushPermissionIfNeeded() }, 1800)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -86,7 +87,7 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             builtInZoomControls = false
             displayZoomControls = false
-            userAgentString = "$userAgentString ElevatorForumApp/5.0"
+            userAgentString = "$userAgentString ElevatorForumApp/5.1"
         }
 
         webView.setBackgroundColor(0xFF191919.toInt())
@@ -97,12 +98,26 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString().orEmpty()
+
+                // 댓글 앵커 링크는 WebView가 그대로 처리
+                if (url.contains("#")) {
+                    return false
+                }
+
                 return openUrl(url)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 runCatching { CookieManager.getInstance().flush() }
+
+                // 페이지 로드 후 댓글/앵커 위치 스크롤
+                scrollToPendingAnchor()
+
+                // 페이지 로드 후 토큰 재전송
+                webView.postDelayed({
+                    lastSentToken?.let { sendTokenToServer(it) }
+                }, 800)
             }
         }
 
@@ -151,29 +166,10 @@ class MainActivity : AppCompatActivity() {
         loadInitialUrl(intent)
     }
 
-    override fun onResume() {
-        super.onResume()
-        runCatching { webView.onResume() }
-    }
-
-    override fun onPause() {
-        runCatching { webView.onPause() }
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        runCatching {
-            webView.stopLoading()
-            webView.webChromeClient = WebChromeClient()
-            webView.webViewClient = object : WebViewClient() {}
-            webView.destroy()
-        }
-        super.onDestroy()
-    }
-
     private fun loadInitialUrl(intent: Intent?) {
         val pushUrl = intent?.getStringExtra("push_url")
         val deepLink = intent?.dataString
+
         val candidate = when {
             !pushUrl.isNullOrBlank() -> pushUrl
             !deepLink.isNullOrBlank() -> deepLink
@@ -181,7 +177,82 @@ class MainActivity : AppCompatActivity() {
         }
 
         val url = if (URLUtil.isNetworkUrl(candidate)) candidate else getString(R.string.start_url)
-        runCatching { webView.loadUrl(url) }
+
+        val uri = Uri.parse(url)
+        pendingAnchor = uri.fragment
+
+        runCatching {
+            if (webView.url != url || lastLoadedPushUrl != url) {
+                lastLoadedPushUrl = url
+                webView.loadUrl(url)
+            } else {
+                scrollToPendingAnchor()
+            }
+        }
+    }
+
+    private fun scrollToPendingAnchor() {
+        val anchor = pendingAnchor ?: return
+
+        val js = """
+            (function() {
+                try {
+                    var id = ${jsonString(anchor)};
+                    var tries = 0;
+                    var done = false;
+
+                    function findEl() {
+                        var el = document.getElementById(id);
+
+                        if (!el) {
+                            el = document.querySelector('[id="' + id + '"]');
+                        }
+
+                        if (!el) {
+                            var byName = document.getElementsByName(id);
+                            if (byName && byName.length > 0) {
+                                el = byName[0];
+                            }
+                        }
+
+                        return el;
+                    }
+
+                    function run() {
+                        if (done) return;
+
+                        tries++;
+                        var el = findEl();
+
+                        if (el) {
+                            done = true;
+
+                            var rect = el.getBoundingClientRect();
+                            var absoluteTop = window.pageYOffset + rect.top;
+                            var targetTop = absoluteTop - (window.innerHeight * 0.3);
+
+                            window.scrollTo({
+                                top: targetTop < 0 ? 0 : targetTop,
+                                behavior: "auto"
+                            });
+
+                            return;
+                        }
+
+                        if (tries < 10) {
+                            setTimeout(run, 300);
+                        }
+                    }
+
+                    run();
+                } catch (e) {}
+            })();
+        """.trimIndent()
+
+        webView.postDelayed({
+            runCatching { webView.evaluateJavascript(js, null) }
+            pendingAnchor = null
+        }, 900)
     }
 
     private fun openUrl(url: String): Boolean {
@@ -190,15 +261,24 @@ class MainActivity : AppCompatActivity() {
         return when {
             url.startsWith("http://") || url.startsWith("https://") -> false
             url.startsWith("intent:") -> {
-                try { startActivity(Intent.parseUri(url, Intent.URI_INTENT_SCHEME)) } catch (_: Exception) {}
+                try {
+                    startActivity(Intent.parseUri(url, Intent.URI_INTENT_SCHEME))
+                } catch (_: Exception) {
+                }
                 true
             }
             url.startsWith("tel:") || url.startsWith("mailto:") || url.startsWith("sms:") -> {
-                try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: ActivityNotFoundException) {}
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (_: ActivityNotFoundException) {
+                }
                 true
             }
             else -> {
-                try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: Exception) {}
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (_: Exception) {
+                }
                 true
             }
         }
@@ -211,8 +291,11 @@ class MainActivity : AppCompatActivity() {
                 Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
 
-            if (granted) fetchAndSendFcmToken()
-            else notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            if (granted) {
+                fetchAndSendFcmToken()
+            } else {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         } else {
             fetchAndSendFcmToken()
         }
@@ -221,7 +304,10 @@ class MainActivity : AppCompatActivity() {
     private fun fetchAndSendFcmToken() {
         FirebaseMessaging.getInstance().token
             .addOnSuccessListener { token ->
-                if (!token.isNullOrBlank()) sendTokenToServer(token)
+                if (!token.isNullOrBlank()) {
+                    lastSentToken = token
+                    sendTokenToServer(token)
+                }
             }
             .addOnFailureListener {
             }
@@ -239,13 +325,27 @@ class MainActivity : AppCompatActivity() {
         val js = """
             (function() {
                 try {
+                    var uid = '';
+
+                    if (window.APP_USER_ID) uid = String(window.APP_USER_ID);
+                    if (!uid && window.mb_id) uid = String(window.mb_id);
+                    if (!uid && window.g5_user_id) uid = String(window.g5_user_id);
+                    if (!uid && window.member && window.member.mb_id) uid = String(window.member.mb_id);
+
+                    var form = 'token=' + encodeURIComponent('$safeToken') +
+                               '&device=android';
+
+                    if (uid) {
+                        form += '&user_idx=' + encodeURIComponent(uid);
+                    }
+
                     fetch('$tokenUrl', {
                         method: 'POST',
                         credentials: 'include',
                         headers: {
                             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
                         },
-                        body: 'token=' + encodeURIComponent('$safeToken') + '&device=android'
+                        body: form
                     });
                 } catch (e) {}
             })();
@@ -254,5 +354,11 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             runCatching { webView.evaluateJavascript(js, null) }
         }
+    }
+
+    private fun jsonString(value: String): String {
+        return "\"" + value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"") + "\""
     }
 }

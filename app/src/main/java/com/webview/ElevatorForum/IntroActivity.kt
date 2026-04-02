@@ -9,13 +9,22 @@ import androidx.appcompat.app.AppCompatActivity
 class IntroActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_intro)
+
+        val pushUrl = intent?.getStringExtra("push_url")
+        val deepLink = intent?.data
 
         Handler(Looper.getMainLooper()).postDelayed({
             startActivity(Intent(this, MainActivity::class.java).apply {
-                data = intent?.data
                 putExtras(intent ?: Intent())
+                if (!pushUrl.isNullOrBlank()) {
+                    putExtra("push_url", pushUrl)
+                }
+                if (deepLink != null) {
+                    data = deepLink
+                }
             })
             finish()
-        }, 500L)
+        }, 1200L)
     }
 }
