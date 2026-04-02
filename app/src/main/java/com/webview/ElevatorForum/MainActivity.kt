@@ -21,6 +21,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.view.WindowCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.firebase.messaging.FirebaseMessaging
@@ -61,6 +62,7 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
         configureBackPress()
         loadInitialUrl(intent)
+        clearAppNotifications()
 
         webView.postDelayed({ requestPushPermissionIfNeeded() }, 1800)
     }
@@ -160,10 +162,16 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    override fun onResume() {
+        super.onResume()
+        clearAppNotifications()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         loadInitialUrl(intent)
+        clearAppNotifications()
     }
 
     private fun loadInitialUrl(intent: Intent?) {
@@ -282,6 +290,10 @@ class MainActivity : AppCompatActivity() {
                 true
             }
         }
+    }
+
+    private fun clearAppNotifications() {
+        runCatching { NotificationManagerCompat.from(this).cancelAll() }
     }
 
     private fun requestPushPermissionIfNeeded() {

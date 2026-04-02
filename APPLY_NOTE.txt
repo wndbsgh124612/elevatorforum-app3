@@ -1,1 +1,12 @@
-덮어쓰기 후 GitHub Actions로 새 APK를 빌드하고, 기존 앱 삭제 후 재설치하세요.
+아이콘/인트로/배지 초기화 수정본
+
+변경 사항
+- app/src/main/res/mipmap-*/ic_launcher.png
+- app/src/main/res/mipmap-*/ic_launcher_round.png
+- app/src/main/res/drawable-nodpi/ic_launcher_foreground.png
+- app/src/main/res/drawable-nodpi/splash_screen.png
+- app/src/main/res/layout/activity_intro.xml
+- app/src/main/java/com/webview/ElevatorForum/IntroActivity.kt
+- app/src/main/java/com/webview/ElevatorForum/MainActivity.kt
+
+배지(빨간 숫자)는 앱 진입/복귀 시 NotificationManagerCompat.cancelAll()로 지워지도록 수정.
