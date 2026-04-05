@@ -1,0 +1,30 @@
+적용 파일
+1) 앱 소스 덮어쓰기
+- app/src/main/java/com/webview/ElevatorForum/CustomFirebaseMessagingService.kt
+
+2) 서버 업로드
+- rb/rb.lib/curl.send_push.php
+- rb/rb.lib/ef_push.lib.php
+
+적용 방식
+A. 친구요청은 시스템 쪽지
+- 친구요청 성공 직후 아래 함수 호출
+  ef_friend_send_system_note($target_mb_id, $member['mb_id'], $member['mb_nick'].'님이 친구 요청을 보냈습니다.');
+
+B. 채팅은 푸시만
+- 채팅 저장 성공 직후 아래 함수 호출
+  include_once(G5_PATH.'/rb/rb.lib/ef_push.lib.php');
+  ef_push_send_chat(
+      $receiverMbIds,
+      $member['mb_nick'],
+      $messagePreview,
+      $room_id,
+      G5_URL.'/efriend/chat_room.php?room_id='.$room_id,
+      G5_PATH.'/data/push/elevatorforum.json'
+  );
+
+주의
+- 채팅은 쪽지 보내지 말고 푸시만 호출
+- receiverMbIds에는 현재 메시지 보낸 사람 제외한 방 참여자 mb_id 배열 넣기
+- messagePreview는 긴 내용이면 60자 정도로 자른 문자열 추천
+- 앱은 새 채팅 푸시를 누르면 해당 room_url로 이동하도록 이미 맞춰짐
