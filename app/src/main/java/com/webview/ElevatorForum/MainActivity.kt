@@ -1,4 +1,3 @@
-// ⭐ 핵심 변경 포함 완성본
 package com.webview.ElevatorForum
 
 import android.Manifest
@@ -10,7 +9,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.webkit.*
+import android.webkit.CookieManager
+import android.webkit.DownloadListener
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -22,156 +29,451 @@ import com.google.firebase.messaging.FirebaseMessaging
 import java.net.URLEncoder
 
 class MainActivity : AppCompatActivity() {
+private lateinit var webView: WebView
+private lateinit var swipeRefresh: SwipeRefreshLayout
+private var filePathCallback: ValueCallback<Array<Uri>>? = null
+private var lastSentToken: String? = null
 
-    private lateinit var webView: WebView
-    private lateinit var swipeRefresh: SwipeRefreshLayout
-    private var lastSentToken: String? = null
+// 푸시로 들어온 앵커(#c_79 같은 댓글 위치) 보관  
+private var pendingAnchor: String? = null  
+private var lastLoadedPushUrl: String? = null  
 
-    private val appDeviceId: String by lazy { getStableDeviceId() }
+// 고정 기기 식별값  
+private val appDeviceId: String by lazy { getStableDeviceId() }  
 
-    private val notificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) fetchAndSendFcmToken()
-        }
+private val fileChooserLauncher =  
+    registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->  
+        val results = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)  
+        filePathCallback?.onReceiveValue(results)  
+        filePathCallback = null  
+    }  
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+private val notificationPermissionLauncher =  
+    registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->  
+        if (granted) fetchAndSendFcmToken()  
+    }  
 
-        WindowCompat.setDecorFitsSystemWindows(window, true)
-        setContentView(R.layout.activity_main)
+@SuppressLint("SetJavaScriptEnabled")  
+override fun onCreate(savedInstanceState: Bundle?) {  
+    super.onCreate(savedInstanceState)  
 
-        webView = findViewById(R.id.webView)
-        swipeRefresh = findViewById(R.id.swipeRefresh)
+    WindowCompat.setDecorFitsSystemWindows(window, true)  
+    setContentView(R.layout.activity_main)  
 
-        setupWebView()
+    webView = findViewById(R.id.webView)  
+    swipeRefresh = findViewById(R.id.swipeRefresh)  
 
-        applyDeviceCookies(getString(R.string.start_url))
-        webView.loadUrl(getString(R.string.start_url), buildAppHeaders())
+    swipeRefresh.isEnabled = false  
+    configureWebView()  
+    configureBackPress()  
 
-        requestPushPermissionIfNeeded()
-    }
+    // 앱 시작 전 기본 도메인에 기기 쿠키 심기  
+    applyDeviceCookies(getString(R.string.start_url))  
 
-    private fun setupWebView() {
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+    loadInitialUrl(intent)  
+    clearAppNotifications()  
 
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            userAgentString = "$userAgentString ElevatorForumApp/6.0"
-        }
+    webView.postDelayed({ requestPushPermissionIfNeeded() }, 1800)  
+}  
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url.toString()
-                applyDeviceCookies(url)
-                view?.loadUrl(url, buildAppHeaders())
-                return true
-            }
+@SuppressLint("SetJavaScriptEnabled")  
+private fun configureWebView() {  
+    CookieManager.getInstance().setAcceptCookie(true)  
+    runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true) }  
 
-            override fun onPageFinished(view: WebView?, url: String?) {
-                injectAppGlobals()
+    webView.settings.apply {  
+        javaScriptEnabled = true  
+        domStorageEnabled = true  
+        databaseEnabled = true  
+        useWideViewPort = true  
+        loadWithOverviewMode = true  
+        cacheMode = WebSettings.LOAD_DEFAULT  
+        mediaPlaybackRequiresUserGesture = false  
+        allowFileAccess = true  
+        allowContentAccess = true  
+        allowFileAccessFromFileURLs = false  
+        allowUniversalAccessFromFileURLs = false  
+        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE  
+        javaScriptCanOpenWindowsAutomatically = false  
+        setSupportMultipleWindows(false)  
+        builtInZoomControls = false  
+        displayZoomControls = false  
+        userAgentString = "$userAgentString ElevatorForumApp/5.1"  
+    }  
 
-                // ⭐ 로그인 이후 1회만 토큰 전송
-                webView.evaluateJavascript(
-                    "(function(){return window.mb_id || window.g5_user_id || ''})()"
-                ) { user ->
-                    if (!user.isNullOrBlank() && user != "\"\"") {
-                        lastSentToken?.let { sendTokenToServer(it) }
-                    }
-                }
-            }
-        }
-    }
+    webView.setBackgroundColor(0xFF191919.toInt())  
+    webView.overScrollMode = WebView.OVER_SCROLL_NEVER  
+    webView.isVerticalScrollBarEnabled = false  
+    webView.isHorizontalScrollBarEnabled = false  
 
-    private fun fetchAndSendFcmToken() {
-        FirebaseMessaging.getInstance().token.addOnSuccessListener {
-            if (!it.isNullOrBlank()) {
-                lastSentToken = it
-            }
-        }
-    }
+    webView.webViewClient = object : WebViewClient() {  
 
-    // ⭐ fetch → form submit 방식으로 변경 (핵심)
-    private fun sendTokenToServer(token: String) {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {  
+            val url = request?.url?.toString().orEmpty()  
 
-        val safeToken = token.replace("'", "")
-        val safeDeviceId = appDeviceId.replace("'", "")
-        val tokenUrl = getString(R.string.token_url)
+            // 댓글 앵커 링크는 WebView가 그대로 처리  
+            if (url.contains("#")) {  
+                return false  
+            }  
 
-        val js = """
-        (function(){
-            try{
-                var uid = window.mb_id || window.g5_user_id || '';
-                if(!uid) return;
+            return if (url.startsWith("http://") || url.startsWith("https://")) {  
+                applyDeviceCookies(url)  
+                view?.loadUrl(url, buildAppHeaders())  
+                true  
+            } else {  
+                openUrl(url)  
+            }  
+        }  
 
-                var form = document.createElement('form');
-                form.method = 'POST';
-                form.action = '$tokenUrl';
+        override fun onPageFinished(view: WebView?, url: String?) {  
+            super.onPageFinished(view, url)  
 
-                function add(name,value){
-                    var i = document.createElement('input');
-                    i.type='hidden';
-                    i.name=name;
-                    i.value=value;
-                    form.appendChild(i);
-                }
+            if (!url.isNullOrBlank()) {  
+                applyDeviceCookies(url)  
+            }  
 
-                add('token','$safeToken');
-                add('device','android');
-                add('device_id','$safeDeviceId');
-                add('user_idx',uid);
+            runCatching { CookieManager.getInstance().flush() }  
 
-                document.body.appendChild(form);
-                form.submit();
+            // 페이지 로드 후 JS 전역값 주입  
+            injectAppGlobals()  
 
-            }catch(e){}
-        })();
-        """
+            // 페이지 로드 후 댓글/앵커 위치 스크롤  
+            scrollToPendingAnchor()  
 
-        webView.evaluateJavascript(js, null)
-    }
+            // 페이지 로드 후 토큰 재전송  
+            webView.postDelayed({  
+                lastSentToken?.let { sendTokenToServer(it) }  
+            }, 800)  
+        }  
+    }  
 
-    private fun injectAppGlobals() {
-        val js = """
-            window.APP_DEVICE_ID='${appDeviceId}';
-            window.APP_CLIENT='android';
-        """
-        webView.evaluateJavascript(js, null)
-    }
+    webView.webChromeClient = object : WebChromeClient() {  
+        override fun onShowFileChooser(  
+            webView: WebView?,  
+            filePathCallback: ValueCallback<Array<Uri>>?,  
+            fileChooserParams: FileChooserParams?  
+        ): Boolean {  
+            this@MainActivity.filePathCallback?.onReceiveValue(null)  
+            this@MainActivity.filePathCallback = filePathCallback  
+            return try {  
+                val chooserIntent = fileChooserParams?.createIntent()  
+                if (chooserIntent != null) {  
+                    fileChooserLauncher.launch(chooserIntent)  
+                    true  
+                } else {  
+                    this@MainActivity.filePathCallback = null  
+                    false  
+                }  
+            } catch (_: Exception) {  
+                this@MainActivity.filePathCallback = null  
+                false  
+            }  
+        }  
+    }  
 
-    private fun getStableDeviceId(): String {
-        val id = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
-        return "android-$id"
-    }
+    webView.setDownloadListener(DownloadListener { url, _, _, _, _ ->  
+        if (!url.isNullOrBlank()) {  
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }  
+        }  
+    })  
+}  
 
-    private fun buildAppHeaders(): Map<String, String> {
-        return mapOf(
-            "X-App-Device-Id" to appDeviceId,
-            "X-App-Client" to "android"
-        )
-    }
+private fun configureBackPress() {  
+    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {  
+        override fun handleOnBackPressed() {  
+            if (webView.canGoBack()) webView.goBack() else finish()  
+        }  
+    })  
+}  
 
-    private fun applyDeviceCookies(url: String) {
-        val cm = CookieManager.getInstance()
-        val id = URLEncoder.encode(appDeviceId, "UTF-8")
+override fun onResume() {  
+    super.onResume()  
+    clearAppNotifications()  
+    applyDeviceCookies(getString(R.string.start_url))  
+}  
 
-        cm.setCookie(url, "ef_device_id=$id; path=/")
-        cm.setCookie(url, "ef_app=1; path=/")
-        cm.setCookie(url, "ef_app_client=android; path=/")
-        cm.flush()
-    }
+override fun onNewIntent(intent: Intent) {  
+    super.onNewIntent(intent)  
+    setIntent(intent)  
+    loadInitialUrl(intent)  
+    clearAppNotifications()  
+}  
 
-    private fun requestPushPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            if (granted == PackageManager.PERMISSION_GRANTED) {
-                fetchAndSendFcmToken()
-            } else {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        } else {
-            fetchAndSendFcmToken()
-        }
-    }
+private fun loadInitialUrl(intent: Intent?) {  
+    val pushUrl = intent?.getStringExtra("push_url")  
+    val deepLink = intent?.dataString  
+
+    val candidate = when {  
+        !pushUrl.isNullOrBlank() -> pushUrl  
+        !deepLink.isNullOrBlank() -> deepLink  
+        else -> getString(R.string.start_url)  
+    }  
+
+    val url = if (URLUtil.isNetworkUrl(candidate)) candidate else getString(R.string.start_url)  
+
+    val uri = Uri.parse(url)  
+    pendingAnchor = uri.fragment  
+
+    applyDeviceCookies(url)  
+
+    runCatching {  
+        if (webView.url != url || lastLoadedPushUrl != url) {  
+            lastLoadedPushUrl = url  
+            webView.loadUrl(url, buildAppHeaders())  
+        } else {  
+            scrollToPendingAnchor()  
+        }  
+    }  
+}  
+
+private fun scrollToPendingAnchor() {  
+    val anchor = pendingAnchor ?: return  
+
+    val js = """  
+        (function() {  
+            try {  
+                var id = ${jsonString(anchor)};  
+                var tries = 0;  
+                var done = false;  
+
+                function findEl() {  
+                    var el = document.getElementById(id);  
+
+                    if (!el) {  
+                        el = document.querySelector('[id="' + id + '"]');  
+                    }  
+
+                    if (!el) {  
+                        var byName = document.getElementsByName(id);  
+                        if (byName && byName.length > 0) {  
+                            el = byName[0];  
+                        }  
+                    }  
+
+                    return el;  
+                }  
+
+                function run() {  
+                    if (done) return;  
+
+                    tries++;  
+                    var el = findEl();  
+
+                    if (el) {  
+                        done = true;  
+
+                        var rect = el.getBoundingClientRect();  
+                        var absoluteTop = window.pageYOffset + rect.top;  
+                        var targetTop = absoluteTop - (window.innerHeight * 0.3);  
+
+                        window.scrollTo({  
+                            top: targetTop < 0 ? 0 : targetTop,  
+                            behavior: "auto"  
+                        });  
+
+                        return;  
+                    }  
+
+                    if (tries < 10) {  
+                        setTimeout(run, 300);  
+                    }  
+                }  
+
+                run();  
+            } catch (e) {}  
+        })();  
+    """.trimIndent()  
+
+    webView.postDelayed({  
+        runCatching { webView.evaluateJavascript(js, null) }  
+        pendingAnchor = null  
+    }, 900)  
+}  
+
+private fun openUrl(url: String): Boolean {  
+    if (url.isBlank()) return true  
+
+    return when {  
+        url.startsWith("http://") || url.startsWith("https://") -> false  
+        url.startsWith("intent:") -> {  
+            try {  
+                startActivity(Intent.parseUri(url, Intent.URI_INTENT_SCHEME))  
+            } catch (_: Exception) {  
+            }  
+            true  
+        }  
+        url.startsWith("tel:") || url.startsWith("mailto:") || url.startsWith("sms:") -> {  
+            try {  
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))  
+            } catch (_: ActivityNotFoundException) {  
+            }  
+            true  
+        }  
+        else -> {  
+            try {  
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))  
+            } catch (_: Exception) {  
+            }  
+            true  
+        }  
+    }  
+}  
+
+private fun clearAppNotifications() {  
+    runCatching { NotificationManagerCompat.from(this).cancelAll() }  
+}  
+
+private fun requestPushPermissionIfNeeded() {  
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {  
+        val granted = ContextCompat.checkSelfPermission(  
+            this,  
+            Manifest.permission.POST_NOTIFICATIONS  
+        ) == PackageManager.PERMISSION_GRANTED  
+
+        if (granted) {  
+            fetchAndSendFcmToken()  
+        } else {  
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)  
+        }  
+    } else {  
+        fetchAndSendFcmToken()  
+    }  
+}  
+
+private fun fetchAndSendFcmToken() {  
+    FirebaseMessaging.getInstance().token  
+        .addOnSuccessListener { token ->  
+            if (!token.isNullOrBlank()) {  
+                lastSentToken = token  
+                sendTokenToServer(token)  
+            }  
+        }  
+        .addOnFailureListener {  
+        }  
+}  
+
+private fun sendTokenToServer(token: String) {  
+    val safeToken = token  
+        .replace("\\", "\\\\")  
+        .replace("'", "\\'")  
+        .replace("\n", "")  
+        .replace("\r", "")  
+
+    val safeDeviceId = appDeviceId  
+        .replace("\\", "\\\\")  
+        .replace("'", "\\'")  
+        .replace("\n", "")  
+        .replace("\r", "")  
+
+    val tokenUrl = getString(R.string.token_url)  
+
+    val js = """  
+        (function() {  
+            try {  
+                var uid = '';  
+
+                if (window.APP_USER_ID) uid = String(window.APP_USER_ID);  
+                if (!uid && window.mb_id) uid = String(window.mb_id);  
+                if (!uid && window.g5_user_id) uid = String(window.g5_user_id);  
+                if (!uid && window.member && window.member.mb_id) uid = String(window.member.mb_id);  
+
+                var form = 'token=' + encodeURIComponent('$safeToken') +  
+                           '&device=android' +  
+                           '&device_id=' + encodeURIComponent('$safeDeviceId');  
+
+                if (uid) {  
+                    form += '&user_idx=' + encodeURIComponent(uid);  
+                }  
+
+                fetch('$tokenUrl', {  
+                    method: 'POST',  
+                    credentials: 'include',  
+                    headers: {  
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',  
+                        'X-App-Device-Id': '$safeDeviceId',  
+                        'X-App-Client': 'android'  
+                    },  
+                    body: form  
+                });  
+            } catch (e) {}  
+        })();  
+    """.trimIndent()  
+
+    runOnUiThread {  
+        runCatching { webView.evaluateJavascript(js, null) }  
+    }  
+}  
+
+private fun injectAppGlobals() {  
+    val safeDeviceId = appDeviceId  
+        .replace("\\", "\\\\")  
+        .replace("'", "\\'")  
+        .replace("\n", "")  
+        .replace("\r", "")  
+
+    val js = """  
+        (function() {  
+            try {  
+                window.APP_DEVICE_ID = '$safeDeviceId';  
+                window.APP_CLIENT = 'android';  
+                window.IS_ELEVATOR_FORUM_APP = true;  
+            } catch (e) {}  
+        })();  
+    """.trimIndent()  
+
+    runCatching { webView.evaluateJavascript(js, null) }  
+}  
+
+private fun getStableDeviceId(): String {  
+    val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)  
+    return if (!androidId.isNullOrBlank()) {  
+        "android-$androidId"  
+    } else {  
+        "android-unknown"  
+    }  
+}  
+
+private fun buildAppHeaders(): Map<String, String> {  
+    return mapOf(  
+        "X-App-Device-Id" to appDeviceId,  
+        "X-App-Client" to "android"  
+    )  
+}  
+
+private fun applyDeviceCookies(url: String) {  
+    val cookieManager = CookieManager.getInstance()  
+    val encodedId = runCatching { URLEncoder.encode(appDeviceId, "UTF-8") }.getOrDefault(appDeviceId)  
+
+    val commonCookies = listOf(  
+        "ef_device_id=$encodedId; path=/; max-age=315360000",  
+        "ef_app=1; path=/; max-age=315360000",  
+        "ef_app_client=android; path=/; max-age=315360000"  
+    )  
+
+    runCatching {  
+        commonCookies.forEach { cookieManager.setCookie(url, it) }  
+    }  
+
+    runCatching {  
+        val uri = Uri.parse(url)  
+        val host = uri.host ?: ""  
+        if (host.isNotBlank()) {  
+            commonCookies.forEach { raw ->  
+                cookieManager.setCookie(  
+                    "${uri.scheme}://$host",  
+                    "$raw; domain=$host"  
+                )  
+            }  
+        }  
+    }  
+
+    runCatching { cookieManager.flush() }  
+}  
+
+private fun jsonString(value: String): String {  
+    return "\"" + value  
+        .replace("\\", "\\\\")  
+        .replace("\"", "\\\"") + "\""  
+}
+
 }
